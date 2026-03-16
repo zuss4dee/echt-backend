@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import tempfile
 from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -8,22 +9,22 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 import fitz  # PyMuPDF
-from supabase import create_client, Client
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from supabase import Client, create_client
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from .src.detectors.metadata_detector import MetadataDetector
-from .src.detectors.pixel_detector import PixelDetector
-from .src.detectors.pdf_structure_detector import PDFStructureDetector
-from .src.detectors.font_detector import FontDetector
-from .src.detectors.text_layer_detector import TextLayerDetector
-from .src.detectors.layout_detector import LayoutDetector
-from .src.detectors.signature_detector import SignatureDetector
-from .src.detectors.embedded_object_detector import EmbeddedObjectDetector
-from .src.detectors.confidence_scorer import ConfidenceScorer
-from .src.detectors.ai_content_detector import AIContentDetector
-from .src.policy_engine import PolicyEngine
+from src.detectors.metadata_detector import MetadataDetector
+from src.detectors.pixel_detector import PixelDetector
+from src.detectors.pdf_structure_detector import PDFStructureDetector
+from src.detectors.font_detector import FontDetector
+from src.detectors.text_layer_detector import TextLayerDetector
+from src.detectors.layout_detector import LayoutDetector
+from src.detectors.signature_detector import SignatureDetector
+from src.detectors.embedded_object_detector import EmbeddedObjectDetector
+from src.detectors.confidence_scorer import ConfidenceScorer
+from src.detectors.ai_content_detector import AIContentDetector
+from src.policy_engine import PolicyEngine
 
 
 app = FastAPI(title="Echt Document Forensics API", version="1.0.0")
@@ -52,6 +53,18 @@ _supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Optional[Client] = None
 if _supabase_url and _supabase_key:
     supabase = create_client(_supabase_url, _supabase_key)
+
+
+def _secure_delete_file(path: str) -> None:
+    """
+    Best-effort deletion of a temporary file used during analysis.
+    Runs in a background task so it does not block the response.
+    """
+    try:
+        if path and os.path.exists(path):
+            os.unlink(path)
+    except Exception as exc:
+        logging.exception("Failed to delete temp file %s: %s", path, exc)
 
 
 def pdf_to_image(pdf_bytes: bytes) -> Image.Image:
@@ -259,15 +272,41 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
 
 
 @app.post("/api/analyze")
-async def analyze_document(file: UploadFile = File(...), doc_type_key: str = Form(...)) -> Dict[str, Any]:
+async def analyze_document(
+    file: UploadFile = File(...),
+    doc_type_key: str = Form(...),
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
     """
     Analyze an uploaded document and return key forensic metrics and policy verdict.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
 
+    temp_path: Optional[str] = None
+
     try:
-        file_bytes = await file.read()
+        # Persist the uploaded file to a secure temporary location on disk
+        # so downstream libraries (OpenCV, PyMuPDF) operate on a real file.
+        _, ext = os.path.splitext(file.filename)
+        fd, temp_path = tempfile.mkstemp(suffix=ext or "")
+        try:
+            with os.fdopen(fd, "wb") as tmp:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+        except Exception:
+            # If writing the temp file fails, ensure we do not leave anything behind.
+            if temp_path:
+                _secure_delete_file(temp_path)
+            raise
+
+        # Read the file bytes back from disk and feed into the existing analysis pipeline.
+        with open(temp_path, "rb") as f:
+            file_bytes = f.read()
+
         analysis = run_full_analysis(file.filename, file_bytes)
         policy_result = policy_engine.evaluate(analysis, doc_type_key)
 
@@ -393,9 +432,19 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
                 print(f"SUPABASE ERROR: {e}")
                 logging.exception("Supabase insert failed: %s", e)
 
+        # Schedule background deletion of the temporary file once the response is sent.
+        if background_tasks is not None and temp_path:
+            background_tasks.add_task(_secure_delete_file, temp_path)
+
         return out
     except HTTPException:
+        # Ensure temp file is removed even when we raise an HTTP error.
+        if temp_path:
+            _secure_delete_file(temp_path)
         raise
     except Exception as exc:
+        # Best-effort cleanup on unexpected errors as well.
+        if temp_path:
+            _secure_delete_file(temp_path)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
 
