@@ -1,0 +1,11 @@
+# Minimal backend deps for Document Forensics API (no scipy/sklearn/streamlit)
+fastapi>=0.100,<1.0
+uvicorn[standard]>=0.20,<1.0
+PyMuPDF>=1.23
+Pillow>=10.0
+python-dotenv>=1.0
+supabase>=2.0
+opencv-python-headless>=4.8
+numpy>=1.24,<3.0
+python-multipart>=0.0.6
+PyYAML>=6.0

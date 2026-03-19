@@ -1,0 +1,33 @@
+# config/policies.yaml
+
+global_thresholds:
+  high_risk_score: 55
+  medium_risk_score: 35
+
+document_types:
+  visa_refusal:
+    display_name: "Visa / UKVI Refusal Letter"
+    strictness: high
+    critical_flags:
+      - "suspicious_software"
+      - "timeline_anomaly"
+      - "author_is_person" # UKVI letters shouldn't have personal author names
+    auto_reject_if:
+      - "producer_contains: aspose"
+      - "producer_contains: ilovepdf"
+      - "ai_confidence > 80"
+
+  university_letter:
+    display_name: "University Withdrawal/Status Letter"
+    strictness: medium
+    critical_flags:
+      - "domain_mismatch" # e.g., email implies .ac.uk but metadata is generic
+    weights:
+      ai_content: 1.5 # Boost AI detection weight for uni letters
+
+  medical_letter:
+    display_name: "Medical / Doctor Note"
+    strictness: low
+    allow_scans: true # Doctors often scan paper
+    critical_flags:
+      - "pixel_manipulation" # ELA/Noise analysis is critical here
