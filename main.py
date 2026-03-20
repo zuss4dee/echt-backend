@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import tempfile
+import re
 from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -9,8 +10,14 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 import fitz  # PyMuPDF
+import jwt  # PyJWT
+import json
+import urllib.request
+from jwt.algorithms import ECAlgorithm
+from fastapi import BackgroundTasks, Depends, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from supabase import Client, create_client
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
@@ -46,6 +53,142 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 print("--- STARTUP CHECK ---")
 print(f"SUPABASE_URL found: {bool(os.getenv('SUPABASE_URL'))}")
 print(f"SUPABASE_KEY found: {bool(os.getenv('SUPABASE_KEY'))}")
+
+# NOTE: Add `SUPABASE_JWT_SECRET` to `backend/.env`.
+# This secret must match your Supabase project's JWT secret if your project
+# uses HS256. Many Supabase projects now use ES256 (asymmetric) tokens; in
+# that case we verify using the project's JWKS endpoint instead.
+SUPABASE_JWT_SECRET = re.sub(r"\s+", "", os.getenv("SUPABASE_JWT_SECRET") or "")
+# More aggressive sanitization than `.strip()` to prevent invisible newline/BOM
+# characters from breaking DNS resolution.
+SUPABASE_URL = re.sub(r"\s+", "", os.getenv("SUPABASE_URL") or "")
+SUPABASE_JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+security = HTTPBearer()
+
+
+def fetch_jwks_no_proxy(jwks_url: str) -> Dict[str, Any]:
+    """
+    Fetch JWKS while ignoring any proxy-related environment variables.
+    This avoids "Tunnel connection failed: 403 Forbidden" inside some dev setups.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(jwks_url, timeout=15) as resp:
+        body = resp.read().decode("utf-8")
+    return json.loads(body)
+
+
+def verify_user(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    """
+    Verify the Supabase JWT from the `Authorization: Bearer <token>` header.
+    Returns the Supabase user ID (the `sub` claim).
+    """
+    token = credentials.credentials
+    try:
+        if not token:
+            raise ValueError("Missing token")
+
+        # Prefer verifying via Supabase Auth directly first.
+        # This avoids brittle local JWKS fetch behavior (DNS/proxy).
+        # If that fails, we fall back to local signature verification.
+        try:
+            if supabase is not None:
+                user_resp = supabase.auth.get_user(token)
+                user_obj = getattr(user_resp, "user", None)
+                user_id = getattr(user_obj, "id", None) if user_obj else None
+                if user_id:
+                    return str(user_id)
+        except Exception as fb_exc:
+            print(
+                f"[verify_user] supabase.auth.get_user fallback failed ({type(fb_exc).__name__})."
+            )
+
+        header = jwt.get_unverified_header(token)
+        alg = header.get("alg")
+        if not alg:
+            raise ValueError("Missing alg in JWT header")
+
+        # Debug-only: print what the token *claims* (without verifying signature).
+        try:
+            unverified_payload = jwt.decode(
+                token,
+                options={
+                    "verify_signature": False,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                },
+            )
+            print(
+                "[verify_user] JWT header/claims:",
+                {
+                    "alg": header.get("alg"),
+                    "aud": unverified_payload.get("aud"),
+                    "iss": unverified_payload.get("iss"),
+                    "sub": unverified_payload.get("sub"),
+                    "exp": unverified_payload.get("exp"),
+                },
+            )
+        except Exception:
+            # If token isn't a well-formed JWT, signature verification will fail anyway.
+            pass
+
+        # Verify based on token signing algorithm.
+        # - HS256: requires SUPABASE_JWT_SECRET
+        # - ES256: verified via Supabase JWKS endpoint
+        if alg == "HS256":
+            if not SUPABASE_JWT_SECRET:
+                raise ValueError("SUPABASE_JWT_SECRET is not configured for HS256 tokens.")
+            payload = jwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+        elif alg == "ES256":
+            if not SUPABASE_URL:
+                raise ValueError(
+                    "SUPABASE_URL is missing; cannot fetch JWKS for ES256 verification."
+                )
+
+            kid = header.get("kid")
+            if not kid:
+                raise ValueError("Missing `kid` in JWT header for ES256 verification.")
+
+            jwks = fetch_jwks_no_proxy(SUPABASE_JWKS_URL)
+            keys = jwks.get("keys") or []
+            jwk = next((k for k in keys if k.get("kid") == kid), None)
+            if not jwk:
+                raise ValueError(f"No matching JWK found for kid={kid}")
+
+            public_key = ECAlgorithm.from_jwk(json.dumps(jwk))
+            payload = jwt.decode(
+                token,
+                public_key,
+                algorithms=["ES256"],
+                audience="authenticated",
+            )
+        else:
+            raise ValueError(f"Unsupported JWT alg: {alg}")
+
+        user_id = payload.get("sub")
+        if not user_id:
+            raise ValueError("Missing `sub` claim")
+        return user_id
+    except Exception as e:
+        # Print the underlying JWT error so we can quickly diagnose whether the
+        # failure is due to signature mismatch, wrong audience, wrong secret, etc.
+        # (uvicorn captures stdout; this is more reliable than logging config for local dev)
+        exc_type = type(e).__name__
+        print(f"[verify_user] JWT verification failed ({exc_type}).")
+        logging.exception("JWT verification failed")
+
+        # At this point, both local verification and the fallback failed.
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+        )
 
 # Supabase client (optional: only if env vars set)
 _supabase_url = os.getenv("SUPABASE_URL")
@@ -276,6 +419,7 @@ async def analyze_document(
     file: UploadFile = File(...),
     doc_type_key: str = Form(...),
     background_tasks: BackgroundTasks = None,
+    user_id: str = Depends(verify_user),
 ) -> Dict[str, Any]:
     """
     Analyze an uploaded document and return key forensic metrics and policy verdict.
