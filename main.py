@@ -398,8 +398,9 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
     if analysis["file_type"] == "pdf" and analysis.get("all_results"):
         all_results = analysis["all_results"]
         for key in ["structure", "font", "text_layer", "layout", "signature", "embedded"]:
-            if key in all_results:
-                flags.extend(all_results[key].get("flags", []))
+            block = all_results.get(key)
+            if isinstance(block, dict):
+                flags.extend(block.get("flags", []))
 
     metadata_raw = analysis["metadata"].get("raw_data", {})
     assessment = metadata_raw.get("assessment")

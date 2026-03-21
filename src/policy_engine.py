@@ -56,6 +56,8 @@ class PolicyEngine:
         # These are instant fail conditions defined in YAML
         auto_reject_rules = policy.get('auto_reject_if', [])
         for rule in auto_reject_rules:
+            if not rule or not isinstance(rule, str):
+                continue
             reject_reason = self._check_auto_reject(analysis, rule)
             if reject_reason:
                 return {
@@ -69,13 +71,15 @@ class PolicyEngine:
         critical_flags_config = policy.get('critical_flags', [])
         hit_critical_flags = []
 
+        meta = analysis.get('metadata') or {}
+        noise = analysis.get('noise') or {}
         # Flatten all detected flags from metadata, noise, and PDF detectors
-        detected_flags = list(analysis['metadata'].get('flags', [])) + \
-                        list(analysis['noise'].get('flags', []))
-        all_results = analysis.get('all_results', {})
+        detected_flags = list(meta.get('flags', [])) + list(noise.get('flags', []))
+        all_results = analysis.get('all_results') or {}
         for key in ('structure', 'font', 'text_layer', 'layout', 'signature', 'embedded'):
-            if key in all_results and all_results[key].get('flags'):
-                detected_flags.extend(all_results[key]['flags'])
+            block = all_results.get(key)
+            if isinstance(block, dict) and block.get('flags'):
+                detected_flags.extend(block['flags'])
 
         # Critical config can use short names; map to flag substrings where needed
         critical_substrings = {
@@ -112,15 +116,15 @@ class PolicyEngine:
             }
 
         # 4. Check Risk Scores (aggregate metadata + PDF detectors for better fraud detection)
-        risk_score = analysis['metadata']['risk_score']
-        trust_score = analysis['metadata']['trust_score']
+        risk_score = meta.get('risk_score', 0)
+        trust_score = meta.get('trust_score', 0)
 
         # Include PDF detector risk so structure/font/signature anomalies push toward RED
-        all_results = analysis.get('all_results', {})
         detector_risks = []
         for key in ('structure', 'font', 'text_layer', 'layout', 'signature', 'embedded'):
-            if key in all_results and all_results[key] is not None:
-                r = all_results[key].get('risk_score')
+            block = all_results.get(key)
+            if isinstance(block, dict):
+                r = block.get('risk_score')
                 if r is not None:
                     detector_risks.append(r)
         max_detector_risk = max(detector_risks) if detector_risks else 0
@@ -167,8 +171,8 @@ class PolicyEngine:
         # Producer/Software Checks
         if "producer_contains" in rule or "aspose" in rule or "ilovepdf" in rule:
             target = rule.split(":")[-1].strip() if ":" in rule else rule
-            raw = analysis['metadata'].get('raw_data', {})
-            pdf_meta = raw.get('pdf_metadata', {})
+            raw = (analysis.get('metadata') or {}).get('raw_data') or {}
+            pdf_meta = raw.get('pdf_metadata') or {}
             producer = str(raw.get('producer', '') or pdf_meta.get('producer', '')).lower()
             creator = str(raw.get('creator', '') or pdf_meta.get('creator', '')).lower()
             software = str(raw.get('software', '')).lower()
@@ -189,13 +193,15 @@ class PolicyEngine:
 
     def _evaluate_generic(self, analysis):
         """Fallback for unknown document types"""
-        risk = analysis['metadata']['risk_score']
-        trust = analysis['metadata'].get('trust_score', 85)
-        all_results = analysis.get('all_results', {})
+        meta = analysis.get('metadata') or {}
+        risk = meta.get('risk_score', 0)
+        trust = meta.get('trust_score', 85)
+        all_results = analysis.get('all_results') or {}
         max_d = 0
         for key in ('structure', 'font', 'signature', 'text_layer', 'layout', 'embedded'):
-            if key in all_results and all_results[key]:
-                r = all_results[key].get('risk_score') or 0
+            block = all_results.get(key)
+            if isinstance(block, dict):
+                r = block.get('risk_score') or 0
                 max_d = max(max_d, r)
         effective = min(100, risk + 0.4 * max_d)
         if effective >= 55 or trust < 45:
