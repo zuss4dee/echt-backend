@@ -267,7 +267,8 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     ai_result = None
     if file_type == "pdf" and pdf_doc:
         try:
-            extracted_text = metadata_result.get("raw_data", {}).get("extracted_text_full", "")
+            raw_for_text = metadata_result.get("raw_data") or {}
+            extracted_text = raw_for_text.get("extracted_text_full", "")
             if not extracted_text:
                 text_parts: List[str] = []
                 for page_num in range(min(len(pdf_doc), 3)):
@@ -382,8 +383,8 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
     """
     flags: List[str] = []
 
-    flags.extend(analysis["metadata"].get("flags", []))
-    flags.extend(analysis["noise"].get("flags", []))
+    flags.extend((analysis.get("metadata") or {}).get("flags", []))
+    flags.extend((analysis.get("noise") or {}).get("flags", []))
 
     ai_content = analysis.get("ai_content")
     if ai_content and ai_content.get("is_ai_generated"):
@@ -402,7 +403,7 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
             if isinstance(block, dict):
                 flags.extend(block.get("flags", []))
 
-    metadata_raw = analysis["metadata"].get("raw_data", {})
+    metadata_raw = (analysis.get("metadata") or {}).get("raw_data") or {}
     assessment = metadata_raw.get("assessment")
     if assessment:
         flags.append(f"Assessment: {assessment}")
@@ -502,6 +503,8 @@ async def analyze_document(
             if key not in all_results:
                 continue
             r = all_results[key]
+            if not isinstance(r, dict):
+                continue
             detector_summary[key] = {
                 "flags": r.get("flags") or [],
                 "risk_score": r.get("risk_score"),

@@ -133,7 +133,9 @@ class PolicyEngine:
 
         # Adjust score based on weights if defined
         weights = policy.get('weights', {})
-        if 'ai_content' in weights and analysis.get('ai_content', {}).get('is_ai_generated'):
+        # Key may exist with value None — .get('ai_content', {}) still returns None, not {}.
+        ai_payload = analysis.get('ai_content') or {}
+        if 'ai_content' in weights and ai_payload.get('is_ai_generated'):
             effective_risk = min(100, effective_risk * weights['ai_content'])
 
         thresholds = self.config.get('global_thresholds', {})
@@ -185,7 +187,7 @@ class PolicyEngine:
             match = re.search(r'ai_confidence\s*>\s*(\d+)', rule)
             if match:
                 threshold = int(match.group(1))
-                ai_result = analysis.get('ai_content', {})
+                ai_result = analysis.get('ai_content') or {}
                 if ai_result and ai_result.get('confidence', 0) > threshold:
                     return f"AI Confidence > {threshold}%"
 
