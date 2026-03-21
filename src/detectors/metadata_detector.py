@@ -51,18 +51,20 @@ class MetadataDetector:
         'google docs', 'pages', 'numbers', 'preview'
     ]
     
-    # Institutional indicator patterns
+    # Institutional indicator patterns (tenant referencing + immigration + income)
     INSTITUTIONAL_PATTERNS = [
-        # UK Universities
-        'university', 'college', '.ac.uk', 'department', 'faculty',
-        'admissions', 'registry', 'student services',
-        # Home Office
+        # Home Office / immigration
         'home office', 'ukvi', 'uk visa', 'immigration', 'visa',
-        'entry clearance', 'confirmation of acceptance',
+        'entry clearance',
+        # Income / banking / payroll (referencing)
+        'hmrc', 'paye', 'payroll', 'payslip', 'bank statement',
+        'employer', 'salary', 'national insurance',
+        # Healthcare (referencing)
+        'nhs', 'gp', 'medical centre', 'health centre',
         # Email domains
-        '@ac.uk', '@gov.uk',
-        # Document types
-        'cas', 'confirmation of acceptance for studies'
+        '@gov.uk', '@nhs.net', '@nhs.uk',
+        # Letting / referencing (light touch)
+        'letting', 'referencing', 'estate agent',
     ]
     
     def _scan_raw_binary(self, file_bytes):
@@ -364,12 +366,15 @@ class MetadataDetector:
             # Check filename for document type patterns
             filename_lower = filename.lower()
             filename_indicators = []
-            if 'cas' in filename_lower:
-                filename_indicators.append('CAS Document')
-            if 'visa' in filename_lower:
-                filename_indicators.append('Visa Document')
-            if any(term in filename_lower for term in ['university', 'college', 'ac.uk']):
-                filename_indicators.append('University Document')
+            if 'visa' in filename_lower or 'ukvi' in filename_lower:
+                filename_indicators.append('Visa / immigration document')
+            if any(
+                term in filename_lower
+                for term in ('payslip', 'payroll', 'salary', 'bank', 'statement', 'barclays', 'lloyds', 'hsbc')
+            ):
+                filename_indicators.append('Income / banking document')
+            if any(term in filename_lower for term in ('medical', 'gp', 'nhs', 'doctor')):
+                filename_indicators.append('Medical document')
             if filename_indicators:
                 raw_data['filename_analysis'] = filename_indicators
         
@@ -486,7 +491,10 @@ class MetadataDetector:
         # If institutional indicators found but consumer software used, flag mismatch
         if institutional_indicators and found_consumer:
             software_name = producer if detected_consumer_software in producer else creator
-            flags.append(f"Source mismatch: University Letter created in consumer software ('{software_name}') - official documents typically come from institutional document management systems or official PDF generators")
+            flags.append(
+                f"Source mismatch: institutional-style content created in consumer software ('{software_name}'). "
+                "Official documents often come from employer, bank, or government PDF systems."
+            )
             risk_score += 20
             raw_data['source_mismatch'] = {
                 'software': software_name,

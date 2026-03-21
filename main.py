@@ -32,6 +32,7 @@ from src.detectors.embedded_object_detector import EmbeddedObjectDetector
 from src.detectors.confidence_scorer import ConfidenceScorer
 from src.detectors.ai_content_detector import AIContentDetector
 from src.policy_engine import PolicyEngine
+from src.doc_type_classifier import infer_doc_type_key
 
 
 app = FastAPI(title="Echt Document Forensics API", version="1.0.0")
@@ -452,7 +453,11 @@ async def analyze_document(
             file_bytes = f.read()
 
         analysis = run_full_analysis(file.filename, file_bytes)
-        policy_result = policy_engine.evaluate(analysis, doc_type_key)
+        effective_doc_type_key, doc_type_confidence, doc_type_reason = infer_doc_type_key(
+            analysis,
+            file.filename or "",
+        )
+        policy_result = policy_engine.evaluate(analysis, effective_doc_type_key)
 
         forgery_score = analysis["metadata"].get("risk_score", 0)
         trust_score = analysis["metadata"].get("trust_score", 0)
@@ -532,7 +537,11 @@ async def analyze_document(
 
         out: Dict[str, Any] = {
             "filename": analysis["filename"],
-            "doc_type_key": doc_type_key,
+            "doc_type_key": effective_doc_type_key,
+            "doc_type_inference": {
+                "confidence": doc_type_confidence,
+                "reason": doc_type_reason,
+            },
             "forgery_score": forgery_score,
             "trust_score": trust_score,
             "red_flags": red_flags,
@@ -565,7 +574,7 @@ async def analyze_document(
                 supabase.table("scans").insert(
                     {
                         "filename": file.filename or out.get("filename", ""),
-                        "doc_type": doc_type_key,
+                        "doc_type": effective_doc_type_key,
                         "verdict": verdict,
                         "forgery_score": forgery_score,
                         "trust_score": trust_score,

@@ -17,13 +17,13 @@ document_types:
       - "producer_contains: ilovepdf"
       - "ai_confidence > 80"
 
-  university_letter:
-    display_name: "University Withdrawal/Status Letter"
+  income_evidence:
+    display_name: "Payslip / bank statement"
     strictness: medium
     critical_flags:
-      - "domain_mismatch" # e.g., email implies .ac.uk but metadata is generic
+      - "timeline_anomaly"
     weights:
-      ai_content: 1.5 # Boost AI detection weight for uni letters
+      ai_content: 1.2
 
   medical_letter:
     display_name: "Medical / Doctor Note"
