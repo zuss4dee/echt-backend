@@ -33,9 +33,11 @@ from src.detectors.confidence_scorer import ConfidenceScorer
 from src.detectors.ai_content_detector import AIContentDetector
 from src.policy_engine import PolicyEngine
 from src.doc_type_classifier import infer_doc_type_key
+from src.routers.auth import router as auth_router
 
 
 app = FastAPI(title="Echt Document Forensics API", version="1.0.0")
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
