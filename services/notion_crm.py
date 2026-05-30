@@ -6,6 +6,7 @@ class NotionCRM:
     def __init__(self):
         self.secret = os.getenv("NOTION_SECRET_KEY")
         self.database_id = os.getenv("NOTION_DATABASE_ID")
+        self.waitlist_db_id = os.getenv("NOTION_WAITLIST_DB_ID")
         # Only initialize if the key exists to prevent local crashes
         self.client = AsyncClient(auth=self.secret) if self.secret else None
 
@@ -51,6 +52,25 @@ class NotionCRM:
             return True
         except Exception as e:
             print(f"Notion sync failed: {e}")
+            return False
+
+    async def add_to_waitlist(self, email: str):
+        if not self.client or not self.waitlist_db_id:
+            print("Notion waitlist credentials missing. Skipping waitlist sync.")
+            return False
+
+        try:
+            await self.client.pages.create(
+                parent={"database_id": self.waitlist_db_id},
+                properties={
+                    "Email": {
+                        "title": [{"text": {"content": email}}]
+                    }
+                },
+            )
+            return True
+        except Exception as e:
+            print(f"Notion waitlist sync failed: {e}")
             return False
 
 

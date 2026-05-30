@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from services.notion_crm import notion_crm
 
 router = APIRouter(prefix="/api/contact", tags=["contact"])
+waitlist_router = APIRouter(prefix="/api/waitlist", tags=["waitlist"])
 
 
 class ContactInquiry(BaseModel):
@@ -50,4 +51,17 @@ async def submit_contact_inquiry(inquiry: ContactInquiry) -> dict[str, str]:
     return {
         "status": "success",
         "message": "Inquiry successfully received and initialized.",
+    }
+
+
+class WaitlistEntry(BaseModel):
+    email: str
+
+
+@waitlist_router.post("/submit", status_code=status.HTTP_201_CREATED)
+async def submit_waitlist_entry(entry: WaitlistEntry) -> dict[str, str]:
+    await notion_crm.add_to_waitlist(entry.email)
+    return {
+        "status": "success",
+        "message": "Waitlist entry successfully received.",
     }
