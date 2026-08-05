@@ -582,6 +582,13 @@ async def analyze_document(
                 verdict = (policy_result or {}).get("verdict", "")
                 supabase.table("scans").insert(
                     {
+                        # Owner of the scan, taken from the verified JWT subject.
+                        # Required by the RLS policy in docs/sql/scans.sql: reads
+                        # are scoped to auth.uid() = user_id, so a row inserted
+                        # without this is invisible to everyone. This insert runs
+                        # with the service role and bypasses RLS, which is why the
+                        # column has to be written explicitly here.
+                        "user_id": user_id,
                         "filename": file.filename or out.get("filename", ""),
                         "doc_type": effective_doc_type_key,
                         "verdict": verdict,
