@@ -216,11 +216,59 @@ def _secure_delete_file(path: str) -> None:
         logging.exception("Failed to delete temp file %s: %s", path, exc)
 
 
+def max_analysis_edge() -> int:
+    """
+    Longest edge, in pixels, that the pixel detectors and preview images may
+    work at. 0 disables the cap and restores the original full-resolution
+    behaviour (used by tests/compare_downscale.py to measure the difference).
+
+    Why this exists: a 4000x3000 phone photo drove peak RSS to ~586 MB and was
+    SIGKILLed on a 512 MB instance. ELA holds several full-size copies of the
+    image at once (original, JPEG re-save, difference, brightness-enhanced),
+    and the preview and heatmap are then PNG-encoded and base64'd on top.
+    Capping the working size cuts all four at once.
+
+    2000 is chosen so that ordinary documents are untouched: an A4 page
+    rendered at the historical 2x zoom is 1190x1684, already under the cap, so
+    its analysis is byte-for-byte what it was before. Only inputs large enough
+    to threaten the memory ceiling are resampled.
+    """
+    try:
+        return max(0, int(os.getenv("MAX_ANALYSIS_EDGE", "2000")))
+    except ValueError:
+        return 2000
+
+
+def fit_for_analysis(image: Image.Image) -> Image.Image:
+    """
+    Downsample an image so its longest edge is within the analysis cap.
+
+    Returns the image untouched when it already fits, so the common case costs
+    nothing and produces identical detector output.
+    """
+    max_edge = max_analysis_edge()
+    if not max_edge or max(image.size) <= max_edge:
+        return image
+    image.thumbnail((max_edge, max_edge), Image.LANCZOS)
+    return image
+
+
 def pdf_to_image(pdf_bytes: bytes) -> Image.Image:
     """Convert first page of PDF to PIL Image."""
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     first_page = pdf_doc[0]
-    pix = first_page.get_pixmap(matrix=fitz.Matrix(2, 2))
+
+    # Render straight to the target size rather than rendering at 2x and
+    # shrinking afterwards: the 2x pixmap IS the peak allocation, so resizing
+    # after the fact would still hit the memory ceiling this is meant to avoid.
+    # Zoom is never raised above the historical 2x, only lowered.
+    zoom = 2.0
+    max_edge = max_analysis_edge()
+    if max_edge:
+        longest_pt = max(first_page.rect.width, first_page.rect.height) or 1
+        zoom = max(min(2.0, max_edge / longest_pt), 0.1)
+
+    pix = first_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     pdf_doc.close()
     return img
@@ -265,6 +313,13 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     else:
         file_stream.seek(0)
         display_image = Image.open(file_stream)
+        # draft() lets JPEG decode straight to a reduced size in the DCT domain,
+        # so the full-resolution bitmap is never allocated at all. No-op for
+        # formats that do not support it; thumbnail() then handles those.
+        max_edge = max_analysis_edge()
+        if max_edge:
+            display_image.draft("RGB", (max_edge, max_edge))
+        display_image = fit_for_analysis(display_image)
 
     ela_heatmap = pixel_detector.analyze_ela(display_image)
     noise_result = pixel_detector.analyze_noise(display_image)
